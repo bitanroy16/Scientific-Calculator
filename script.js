@@ -1,8 +1,20 @@
+/* =============================================================================
+   Advanced fx-991MS Matrix Workspace — Client-Side Calculator Engine
+   ---------------------------------------------------------------------------
+   Every calculation mode (COMP, CMPLX, BASE-N, EQN, MATRIX, VECTOR) runs
+   entirely in the browser using math.js. There is no backend/API call of
+   any kind, so this file can be hosted on any static host (GitHub Pages,
+   Netlify, Vercel, S3, etc.) with no server component required.
+============================================================================= */
+
 let currentExpression = "";
 let selectedBaseNType = "DEC";
-let previousBaseNType = "DEC"; 
+let previousBaseNType = "DEC";
 let keyboardBuffer = "";
 
+// ---------------------------------------------------------------------------
+// BASIC SCREEN / KEY HANDLING
+// ---------------------------------------------------------------------------
 function pressKey(value) {
     let safeValue = value.toLowerCase();
     currentExpression += safeValue;
@@ -14,6 +26,7 @@ function clearScreen() {
     document.getElementById("screenInput").innerText = currentExpression || "";
     keyboardBuffer = "";
 }
+
 function resetCalculator() {
     currentExpression = "";
     keyboardBuffer = "";
@@ -21,9 +34,7 @@ function resetCalculator() {
     document.getElementById("screenInput").innerText = "";
     document.getElementById("screenResult").innerText = "0";
 
-    const aiBox = document.getElementById("aiResponse");
-    if (aiBox) aiBox.innerText = "";
-
+    setAiStatus("Client-Side Engine");
     switchMode();
 }
 
@@ -46,15 +57,22 @@ function toggleTheme() {
     }
 }
 
-// --- FIXED DYNAMIC ROUTING & EVENT HOOKS FOR DIMENSIONS ---
+function setAiStatus(text) {
+    const aiStatus = document.getElementById("aiStatus");
+    if (aiStatus) aiStatus.innerText = text;
+}
+
+// ---------------------------------------------------------------------------
+// DYNAMIC WORKSPACE / MODE SWITCHING (UI ONLY — UNCHANGED BEHAVIOR)
+// ---------------------------------------------------------------------------
 function switchMode() {
     const activeMode = document.getElementById("modeSelect").value;
     document.getElementById("screenModeIndicator").innerText = activeMode;
-    
+
     const workspace = document.getElementById("dynamicWorkspace");
     const baseBtn = document.getElementById("baseBtn");
     const bracketRight = document.getElementById("bracketRight");
-    
+
     workspace.innerHTML = "";
     if (baseBtn) baseBtn.style.display = "none";
     if (bracketRight) bracketRight.style.display = "block";
@@ -67,12 +85,8 @@ function switchMode() {
                 <input type="number" id="coeffB" placeholder="b" value="-5">
                 <input type="number" id="coeffC" placeholder="c" value="6">
             </div>`;
-    } 
+    }
     else if (activeMode === "MATRIX") {
-        // Fallback to size 2 default if not instantiated yet
-        let size = 2; 
-        let op = "MUL"; 
-
         let htmlContent = `
             <div id="matrixControlPanel" style="display:flex; gap:8px; margin-bottom:12px;">
                 <div style="flex:1;">
@@ -88,6 +102,7 @@ function switchMode() {
                         <option value="MUL">A × B (Multiply)</option>
                         <option value="DET">DET (Determinant)</option>
                         <option value="INV">INV (Inverse)</option>
+                        <option value="TRANSPOSE">TRANSPOSE (A only)</option>
                     </select>
                 </div>
             </div>
@@ -96,17 +111,15 @@ function switchMode() {
 
         workspace.innerHTML = htmlContent;
 
-        // Shared dynamic rebuild function to keep context alive
         window.triggerGridRebuild = function() {
             const currentSize = parseInt(document.getElementById("matrixSize").value, 10);
             const currentOp = document.getElementById("matrixOp").value;
             const container = document.getElementById("matrixGridsContainer");
-            
+
             if (!container) return;
 
             let gridHtml = ``;
-            
-            // Generate Matrix A Inputs
+
             gridHtml += `<div style="margin-bottom:6px; font-weight:bold; font-size:0.75rem; text-transform:uppercase; color:#8b949e;">Matrix A:</div>`;
             gridHtml += `<div class="matrix-grid" style="grid-template-columns: repeat(${currentSize}, 1fr); margin-bottom:14px; display:grid; gap:8px;">`;
             for (let i = 0; i < currentSize; i++) {
@@ -117,7 +130,6 @@ function switchMode() {
             }
             gridHtml += `</div>`;
 
-            // Condition Matrix B Layout Container
             const displayStyle = (currentOp === "MUL") ? "block" : "none";
             gridHtml += `<div id="matrixBContainer" style="display: ${displayStyle};">`;
             gridHtml += `<div style="margin-bottom:6px; font-weight:bold; font-size:0.75rem; text-transform:uppercase; color:#8b949e;">Matrix B:</div>`;
@@ -133,7 +145,6 @@ function switchMode() {
             container.innerHTML = gridHtml;
         };
 
-        // Render initial default grid view
         triggerGridRebuild();
     }
     else if (activeMode === "VECTOR") {
@@ -152,7 +163,7 @@ function switchMode() {
         workspace.innerHTML = `
             <div><strong>Base-N Expression Entry:</strong></div>
             <input type="text" id="baseNInput" placeholder="Enter Base Value" style="width:100%; margin-top:5px; background:#222; color:#fff; border:1px solid #444; padding:4px; border-radius:4px;">`;
-        
+
         if (baseBtn) baseBtn.style.display = "block";
         if (bracketRight) bracketRight.style.display = "none";
         setBaseN(selectedBaseNType);
@@ -162,10 +173,10 @@ function switchMode() {
 function setBaseN(baseType) {
     previousBaseNType = selectedBaseNType;
     selectedBaseNType = baseType.toUpperCase();
-    
+
     const subIndicator = document.getElementById("screenBaseIndicator");
     if (subIndicator) subIndicator.innerText = selectedBaseNType;
-    
+
     const buttons = { 'DEC': 'decBtn', 'HEX': 'hexBtn', 'BIN': 'binBtn', 'OCT': 'octBtn' };
     Object.keys(buttons).forEach(key => {
         const btnElement = document.getElementById(buttons[key]);
@@ -186,196 +197,291 @@ function setBaseN(baseType) {
     }
 }
 
-async function triggerCalculation(isConversion = false) {
+// ---------------------------------------------------------------------------
+// MATH ENGINE (formerly server-side, now 100% client-side via math.js)
+// ---------------------------------------------------------------------------
+function roundClean(num, decimals = 10) {
+    if (typeof num !== "number" || !isFinite(num)) return String(num);
+    const rounded = parseFloat(num.toFixed(decimals));
+    return rounded.toString();
+}
+
+function toPlainNumber(value) {
+    if (typeof value === "number") return value;
+    if (value && typeof value.toNumber === "function") return value.toNumber();
+    if (typeof value === "boolean") return value ? 1 : 0;
+    return Number(value);
+}
+
+function isComplexValue(value) {
+    return value && typeof value === "object" && "re" in value && "im" in value;
+}
+
+function formatComplexResult(value, decimals = 5) {
+    let re, im;
+    if (isComplexValue(value)) {
+        re = value.re;
+        im = value.im;
+    } else {
+        re = toPlainNumber(value);
+        im = 0;
+    }
+
+    if (Math.abs(im) < 1e-9) return roundClean(re, decimals);
+    if (Math.abs(re) < 1e-9) return `${roundClean(im, decimals)}i`;
+
+    const sign = im >= 0 ? "+" : "-";
+    return `${roundClean(re, decimals)} ${sign} ${roundClean(Math.abs(im), decimals)}i`;
+}
+
+function formatNumericResult(value) {
+    if (isComplexValue(value)) {
+        if (Math.abs(value.im) < 1e-9) return roundClean(value.re, 10);
+        return formatComplexResult(value, 5);
+    }
+    if (Array.isArray(value) || (value && value.isMatrix)) {
+        return math.format(value);
+    }
+    return roundClean(toPlainNumber(value), 10);
+}
+
+// Normalizes calculator display syntax (π, log/ln, ^, degree trig) into
+// math.js-compatible expression syntax.
+function preprocessExpression(rawExpr, useDegrees) {
+    let expr = rawExpr.replace(/\s+/g, "");
+
+    // π -> pi, with explicit multiplication where needed (e.g. "2π" -> "2*pi")
+    expr = expr.replace(/(\d)π/g, "$1*pi");
+    expr = expr.replace(/π(\d)/g, "pi*$1");
+    expr = expr.replace(/π/g, "pi");
+
+    // Distinguish calculator "log(" (base-10) from "ln(" (natural log).
+    // math.js: log(x) = natural log, log10(x) = base-10 log.
+    expr = expr.replace(/ln\(/g, "\u0000LN\u0000(");
+    expr = expr.replace(/log\(/g, "log10(");
+    expr = expr.replace(/\u0000LN\u0000\(/g, "log(");
+
+    if (useDegrees) {
+        expr = expr.replace(/sin\(([^)]+)\)/g, "sin($1 deg)");
+        expr = expr.replace(/cos\(([^)]+)\)/g, "cos($1 deg)");
+        expr = expr.replace(/tan\(([^)]+)\)/g, "tan($1 deg)");
+    }
+
+    return expr;
+}
+
+function computeComp(rawExpression) {
+    const expr = preprocessExpression(balanceParentheses(rawExpression), true);
+    const value = math.evaluate(expr);
+    return formatNumericResult(value);
+}
+
+function computeCmplx(rawExpression) {
+    const expr = preprocessExpression(balanceParentheses(rawExpression), false);
+    const value = math.evaluate(expr);
+    return formatComplexResult(value, 5);
+}
+
+function computeBaseN(rawExpression, baseLabel) {
+    const baseMap = { DEC: 10, HEX: 16, BIN: 2, OCT: 8 };
+    const radix = baseMap[baseLabel.toUpperCase()] || 10;
+
+    let expr = rawExpression.toUpperCase().replace(/\s+/g, "");
+
+    let pattern;
+    if (radix === 16) pattern = /[0-9A-F]+/g;
+    else if (radix === 10) pattern = /[0-9]+/g;
+    else if (radix === 8) pattern = /[0-7]+/g;
+    else pattern = /[01]+/g;
+
+    const decimalExpr = expr.replace(pattern, (match) => parseInt(match, radix).toString(10));
+    const result = math.evaluate(decimalExpr);
+    const num = toPlainNumber(result);
+
+    return Number.isInteger(num) ? num.toString() : num.toString();
+}
+
+function computeEqn(a, b, c) {
+    if (a === 0) return "Math ERROR (a cannot be 0)";
+
+    const discriminant = b * b - 4 * a * c;
+    if (discriminant >= 0) {
+        const r1 = (-b + Math.sqrt(discriminant)) / (2 * a);
+        const r2 = (-b - Math.sqrt(discriminant)) / (2 * a);
+        return `x1=${roundClean(r1, 4)}, x2=${roundClean(r2, 4)}`;
+    }
+
+    const realPart = -b / (2 * a);
+    const imagPart = Math.sqrt(Math.abs(discriminant)) / (2 * a);
+    return `x1=${roundClean(realPart, 4)}+${roundClean(imagPart, 4)}i, x2=${roundClean(realPart, 4)}-${roundClean(imagPart, 4)}i`;
+}
+
+function roundMatrixArray(arr, decimals) {
+    return arr.map((row) =>
+        Array.isArray(row)
+            ? row.map((v) => parseFloat(Number(v).toFixed(decimals)))
+            : parseFloat(Number(row).toFixed(decimals))
+    );
+}
+
+function computeMatrix(matrixA, matrixB, operation) {
+    operation = (operation || "").toUpperCase();
+    const A = math.matrix(matrixA);
+
+    if (operation === "DET") {
+        return roundClean(math.det(A), 5);
+    }
+    if (operation === "INV") {
+        if (Math.abs(math.det(A)) < 1e-12) return "Math ERROR (Singular Matrix)";
+        const inv = math.inv(A);
+        return JSON.stringify(roundMatrixArray(inv.toArray(), 5));
+    }
+    if (operation === "MUL" || operation === "MULTIPLY") {
+        if (!matrixB || matrixB.length === 0) return "SYN ERROR: Missing Matrix B";
+        const B = math.matrix(matrixB);
+        const result = math.multiply(A, B);
+        return JSON.stringify(roundMatrixArray(result.toArray(), 5));
+    }
+    if (operation === "TRANSPOSE") {
+        return JSON.stringify(math.transpose(A).toArray());
+    }
+    return "Unknown Matrix Action";
+}
+
+function computeVector(vectorA, vectorB, operation) {
+    operation = (operation || "").toUpperCase();
+    if (operation === "DOT") {
+        return roundClean(math.dot(vectorA, vectorB), 5);
+    }
+    if (operation === "CROSS") {
+        const result = math.cross(vectorA, vectorB);
+        return JSON.stringify(Array.isArray(result) ? result : result.toArray());
+    }
+    return "Unknown Vector Action";
+}
+
+// ---------------------------------------------------------------------------
+// CALCULATION DISPATCH (was a fetch() to a Flask API — now purely local)
+// ---------------------------------------------------------------------------
+function triggerCalculation(isConversion = false) {
     const mode = document.getElementById("modeSelect").value;
-    let payload = { mode: mode };
 
-    if (mode === "COMP" || mode === "CMPLX") {
-        if (!currentExpression) return;
-        let validatedExpression = balanceParentheses(currentExpression);
-        payload.expression = validatedExpression;
-        if (mode === "COMP") payload.angle_unit = "DEG"; 
-    } 
-    else if (mode === "BASE_N") {
-        const inputField = document.getElementById("baseNInput");
-        let baseExpression = (inputField && inputField.value) ? inputField.value : currentExpression;
-        if (!baseExpression) return;
-        payload.expression = baseExpression;
-        payload.base = isConversion ? previousBaseNType : selectedBaseNType;
-    }
-    else if (mode === "EQN") {
-        payload.config_type = "DEGREE_2";
-        const rawA = document.getElementById("coeffA").value.toString().trim();
-        const rawB = document.getElementById("coeffB").value.toString().trim();
-        const rawC = document.getElementById("coeffC").value.toString().trim();
-        payload.coefficients = [parseFloat(rawA) || 0, parseFloat(rawB) || 0, parseFloat(rawC) || 0];
-    }
-    else if (mode === "MATRIX") {
-        const size = parseInt(document.getElementById("matrixSize").value, 10);
-        const op = document.getElementById("matrixOp").value;
-        
-        let matrixA = [];
-        let matrixB = [];
-
-        // Scrape calculations based on the EXACT selection dimension loop rules
-        for (let i = 0; i < size; i++) {
-            let rowA = [];
-            let rowB = [];
-            for (let j = 0; j < size; j++) {
-                const elementA = document.getElementById(`m_a${i}${j}`);
-                rowA.push(elementA ? (parseFloat(elementA.value) || 0) : 0);
-                
-                const elementB = document.getElementById(`m_b${i}${j}`);
-                rowB.push(elementB ? (parseFloat(elementB.value) || 0) : 0);
-            }
-            matrixA.push(rowA);
-            matrixB.push(rowB);
-        }
-
-        payload.matrix_a = matrixA;
-        payload.matrix_b = matrixB;
-        payload.operation = op;
-    }
-    else if (mode === "VECTOR") {
-        payload.vector_a = [
-            parseFloat(document.getElementById("v_a1").value) || 0,
-            parseFloat(document.getElementById("v_a2").value) || 0,
-            parseFloat(document.getElementById("v_a3").value) || 0
-        ];
-        payload.vector_b = [
-            parseFloat(document.getElementById("v_b1").value) || 0,
-            parseFloat(document.getElementById("v_b2").value) || 0,
-            parseFloat(document.getElementById("v_b3").value) || 0
-        ];
-        payload.operation = document.getElementById("vectorOp").value;
-    }
+    document.getElementById("screenResult").innerText = "CALC...";
+    setAiStatus("Computing...");
 
     try {
-        document.getElementById("screenResult").innerText = "CALC...";
+        let finalOutput;
 
-const aiStatus = document.getElementById("aiStatus");
-
-if (aiStatus) {
-    aiStatus.innerText = "Processing...";
-}
-        
-        const response = await fetch('http://127.0.0.1:5000/api/991ms/calculate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        const data = await response.json();
-
-     if (data.success) {
-
-    let finalOutput = data.result;
-
-    if (typeof finalOutput === 'object') {
-        finalOutput = JSON.stringify(finalOutput);
-    }
-
-    document.getElementById("screenResult").innerText = finalOutput;
-
-    const aiStatus = document.getElementById("aiStatus");
-    const aiResponse = document.getElementById("aiResponse");
-
-    if (data.ai_type) {
-
-        if (aiStatus) {
-            aiStatus.innerText = "AI Active";
+        if (mode === "COMP") {
+            if (!currentExpression) return;
+            finalOutput = computeComp(currentExpression);
         }
-
-        if (aiResponse) {
-
-            let featureName = "";
-
-            switch(data.ai_type){
-
-                case "equation":
-                    featureName = "Equation Interpreter";
-                    break;
-
-                case "engineering":
-                    featureName = "Engineering Assistant";
-                    break;
-
-                case "conversion":
-                    featureName = "Smart Unit Conversion";
-                    break;
-
-                case "finance":
-                    featureName = "Natural Language Calculator";
-                    break;
-
-                case "geometry":
-                    featureName = "Natural Language Calculator";
-                    break;
-
-                case "formula":
-                    featureName = "Formula Explainer";
-                    break;
-
-                default:
-                    featureName = "AI Engine";
-            }
-
-            aiResponse.innerText =
-                "AI Feature: " + featureName;
+        else if (mode === "CMPLX") {
+            if (!currentExpression) return;
+            finalOutput = computeCmplx(currentExpression);
         }
+        else if (mode === "BASE_N") {
+            const inputField = document.getElementById("baseNInput");
+            const baseExpression = (inputField && inputField.value) ? inputField.value : currentExpression;
+            if (!baseExpression) return;
 
-    } else {
+            const baseForCalc = isConversion ? previousBaseNType : selectedBaseNType;
+            finalOutput = computeBaseN(baseExpression, baseForCalc);
 
-        if (aiStatus) {
-            aiStatus.innerText = "Calculator Mode";
-        }
-
-        if (aiResponse) {
-            aiResponse.innerText = "";
-        }
-    }
-            if (mode === "BASE_N" && isConversion) {
-                let decimalInt = parseInt(finalOutput, 10);
+            if (isConversion) {
+                const decimalInt = parseInt(finalOutput, 10);
                 if (selectedBaseNType === "HEX") finalOutput = decimalInt.toString(16).toUpperCase();
                 else if (selectedBaseNType === "BIN") finalOutput = decimalInt.toString(2);
                 else if (selectedBaseNType === "OCT") finalOutput = decimalInt.toString(8);
                 else finalOutput = decimalInt.toString(10);
             }
-            
-            document.getElementById("screenResult").innerText = finalOutput;
-            
-            if (mode === "COMP" || mode === "CMPLX" || mode === "BASE_N") {
-                document.getElementById("screenInput").innerText = "";
-                currentExpression = finalOutput.toString(); 
-                const inputField = document.getElementById("baseNInput");
-                if (inputField && mode === "BASE_N") {
-                    inputField.value = finalOutput.toString();
+        }
+        else if (mode === "EQN") {
+            const rawA = document.getElementById("coeffA").value.toString().trim();
+            const rawB = document.getElementById("coeffB").value.toString().trim();
+            const rawC = document.getElementById("coeffC").value.toString().trim();
+            const a = parseFloat(rawA) || 0;
+            const b = parseFloat(rawB) || 0;
+            const c = parseFloat(rawC) || 0;
+            finalOutput = computeEqn(a, b, c);
+        }
+        else if (mode === "MATRIX") {
+            const size = parseInt(document.getElementById("matrixSize").value, 10);
+            const op = document.getElementById("matrixOp").value;
+
+            let matrixA = [];
+            let matrixB = [];
+            for (let i = 0; i < size; i++) {
+                let rowA = [];
+                let rowB = [];
+                for (let j = 0; j < size; j++) {
+                    const elementA = document.getElementById(`m_a${i}${j}`);
+                    rowA.push(elementA ? (parseFloat(elementA.value) || 0) : 0);
+
+                    const elementB = document.getElementById(`m_b${i}${j}`);
+                    rowB.push(elementB ? (parseFloat(elementB.value) || 0) : 0);
                 }
+                matrixA.push(rowA);
+                matrixB.push(rowB);
             }
-        } else {
-            document.getElementById("screenResult").innerText = "SYN ERROR";
+
+            finalOutput = computeMatrix(matrixA, matrixB, op);
+        }
+        else if (mode === "VECTOR") {
+            const vectorA = [
+                parseFloat(document.getElementById("v_a1").value) || 0,
+                parseFloat(document.getElementById("v_a2").value) || 0,
+                parseFloat(document.getElementById("v_a3").value) || 0
+            ];
+            const vectorB = [
+                parseFloat(document.getElementById("v_b1").value) || 0,
+                parseFloat(document.getElementById("v_b2").value) || 0,
+                parseFloat(document.getElementById("v_b3").value) || 0
+            ];
+            const operation = document.getElementById("vectorOp").value;
+            finalOutput = computeVector(vectorA, vectorB, operation);
+        }
+        else {
+            document.getElementById("screenResult").innerText = "MODE ERROR";
+            setAiStatus("Client-Side Engine");
+            return;
+        }
+
+        if (typeof finalOutput === "object") {
+            finalOutput = JSON.stringify(finalOutput);
+        }
+
+        document.getElementById("screenResult").innerText = finalOutput;
+        setAiStatus("Client-Side Engine");
+
+        if (mode === "COMP" || mode === "CMPLX" || mode === "BASE_N") {
+            document.getElementById("screenInput").innerText = "";
+            currentExpression = finalOutput.toString();
+            const inputField = document.getElementById("baseNInput");
+            if (inputField && mode === "BASE_N") {
+                inputField.value = finalOutput.toString();
+            }
         }
     } catch (err) {
-        document.getElementById("screenResult").innerText = "CONN ERROR";
+        document.getElementById("screenResult").innerText = "SYN ERROR";
+        setAiStatus("Client-Side Engine");
         console.error(err);
     }
 }
 
-// Global Hardware Keyboard Event Rules Handler
+// ---------------------------------------------------------------------------
+// KEYBOARD & PASTE SUPPORT (UNCHANGED)
+// ---------------------------------------------------------------------------
 document.addEventListener('keydown', function(event) {
-    // If the user is typing inside an input grid or dropdown field, let the default behavior happen
     if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT') return;
 
     const key = event.key;
     const mode = document.getElementById("modeSelect").value;
 
-    // 1. FIX: Allow copy/paste commands (Ctrl+V or Cmd+V) to pass through naturally
     if ((event.ctrlKey || event.metaKey) && key.toLowerCase() === 'v') {
-        // Let the system execute the paste event; handled by the custom paste event listener below
-        return; 
+        return;
     }
 
-    // 2. FIX: Explicitly permit typing 'i' for CMPLX mode expressions
     if (key.toLowerCase() === 'i') {
         event.preventDefault();
         pressKey('i');
@@ -390,14 +496,14 @@ document.addEventListener('keydown', function(event) {
         event.preventDefault();
         keyboardBuffer = "";
         pressKey(key);
-    } 
+    }
     else if (/[a-zA-Z]/.test(key) && key.length === 1) {
         event.preventDefault();
         keyboardBuffer += key.toLowerCase();
     }
     else if (key === 'Enter' || key === '=') {
         event.preventDefault();
-        triggerCalculation(); 
+        triggerCalculation();
     } else if (key === 'Backspace') {
         event.preventDefault();
         clearScreen();
@@ -407,23 +513,18 @@ document.addEventListener('keydown', function(event) {
     }
 });
 
-// 3. FIX: Global Paste Event Listener to capture copied equations directly into the calculator screen
 document.addEventListener('paste', function(event) {
-    // Skip if writing directly into matrix/equation elements
     if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT') return;
 
     event.preventDefault();
-    
-    // Grab the text value from the clipboard buffer data map
+
     let pastedData = (event.clipboardData || window.clipboardData).getData('text');
-    
+
     if (pastedData) {
-        // Clean up formatting issues, convert to lowercase, and strip trailing spaces/newlines
         let cleanPaste = pastedData.replace(/\s+/g, '').toLowerCase();
-        
-        // Append it cleanly onto the active visual workflow tracking state
         currentExpression += cleanPaste;
         document.getElementById("screenInput").innerText = currentExpression;
     }
 });
+
 window.onload = switchMode;

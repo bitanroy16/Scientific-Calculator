@@ -66,3 +66,6 @@ No environment variables, server processes, or API keys are required.
   (`https://cdnjs.cloudflare.com/ajax/libs/mathjs/...`). If you need a fully
   offline build, download `math.min.js` and reference it locally instead of
   the CDN URL in `index.html`.
+
+  https://calculator-7f2s.onrender.com/
+  
